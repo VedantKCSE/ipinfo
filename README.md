@@ -13,7 +13,8 @@ Features:
 - Nmap scan (basic)
 
 ## Screenshots
-
+![image](https://github.com/user-attachments/assets/a6984e3c-e212-4c8b-9235-4da46b3e62e3)
+![image](https://github.com/user-attachments/assets/10a88ff7-23b2-4b3f-865a-b58ae59e6276)
 
 Requirements:
 -------------
