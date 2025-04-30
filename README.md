@@ -1,4 +1,4 @@
-IP Info Tool
+IP Info Tool ( Only Use On Linux )
 ============
 
 Description:
