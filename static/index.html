@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Scan Infoga Recon Tool</title>
+  <style>
+    body {
+      background-color: #0d0d0d;
+      color: #00ff00;
+      font-family: 'Courier New', Courier, monospace;
+      margin: 0;
+      padding: 0;
+    }
+
+    .container {
+      padding: 2rem;
+      max-width: 900px;
+      margin: auto;
+    }
+
+    h1 {
+      text-align: center;
+      color: #00ff00;
+      text-shadow: 0 0 5px #00ff00, 0 0 10px #00ff00;
+    }
+
+    form {
+      margin-bottom: 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    input[type="text"] {
+      background: #000;
+      border: 2px solid #00ff00;
+      padding: 0.5rem;
+      color: #00ff00;
+      font-size: 1rem;
+      width: 80%;
+      margin-bottom: 1rem;
+    }
+
+    button {
+      background: #00ff00;
+      color: #000;
+      padding: 0.5rem 1.5rem;
+      border: none;
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: bold;
+      box-shadow: 0 0 10px #00ff00;
+      transition: background 0.3s ease;
+    }
+
+    button:hover {
+      background: #00dd00;
+    }
+
+    .tabs-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1.5rem;
+      justify-content: center;
+    }
+
+    .tab-btn {
+      background-color: #111;
+      color: #00ff00;
+      border: 1px solid #00ff00;
+      padding: 0.6rem 1rem;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: all 0.3s ease;
+    }
+
+    .tab-btn:hover,
+    .tab-btn.active {
+      background-color: #00ff00;
+      color: #000;
+    }
+
+    .result-panel {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      background-color: #1a1a1a;
+      border: 1px solid #00ff00;
+      border-radius: 8px;
+      box-shadow: 0 0 10px #00ff00;
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: none;
+    }
+
+    .result-panel.active {
+      display: block;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      margin: 2rem auto;
+      border: 6px solid #0d0d0d;
+      border-top: 6px solid #00ff00;
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .export-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🕶️ Scan Infoga Recon Tool</h1>
+    <form id="reconForm">
+      <input type="text" id="targetInput" placeholder="Enter domain or IP (e.g., example.com)" required />
+      <button type="submit">Run Recon</button>
+    </form>
+
+    <!-- Tabs for different sections -->
+    <div class="tabs">
+      <div class="tab active-tab" id="reconTab">Recon Results</div>
+      <div class="tab" id="exportTab">Export Data</div>
+    </div>
+
+    <!-- Output Section -->
+    <div id="output"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('reconForm');
+    const output = document.getElementById('output');
+    const reconTab = document.getElementById('reconTab');
+    const exportTab = document.getElementById('exportTab');
+    let reconData = null;
+
+    reconTab.addEventListener('click', () => {
+      reconTab.classList.add('active-tab');
+      exportTab.classList.remove('active-tab');
+      renderReconOutput(reconData);
+    });
+
+    exportTab.addEventListener('click', () => {
+      exportTab.classList.add('active-tab');
+      reconTab.classList.remove('active-tab');
+      if (reconData) {
+        output.innerHTML = `
+          <div class="export-buttons">
+            <button onclick="exportData('txt')">Export as TXT</button>
+            <button onclick="exportData('json')">Export as JSON</button>
+          </div>`;
+      } else {
+        output.innerHTML = '<div>No data to export.</div>';
+      }
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      output.innerHTML = '<div class="spinner"></div>';
+      const target = document.getElementById('targetInput').value;
+
+      try {
+        const res = await fetch('/api/recon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target })
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          output.innerHTML = `<div class="result-box">❌ ${err.detail}</div>`;
+          return;
+        }
+
+        reconData = await res.json();
+        renderReconOutput(reconData);
+      } catch (err) {
+        output.innerHTML = `<div class="result-box">❌ Error: ${err.message}</div>`;
+      }
+    });
+
+    function renderReconOutput(data) {
+      if (!data) {
+        output.innerHTML = '<div>No data available.</div>';
+        return;
+      }
+
+      let tabsHTML = '<div class="tabs-nav">';
+      let panelsHTML = '';
+      let firstKey = Object.keys(data)[0];
+
+      for (const [key, value] of Object.entries(data)) {
+        tabsHTML += `<button class="tab-btn${key === firstKey ? ' active' : ''}" onclick="showPanel('${key}')">${key.toUpperCase()}</button>`;
+        panelsHTML += `
+          <div id="panel-${key}" class="result-panel${key === firstKey ? ' active' : ''}">
+            ${typeof value === 'object' ? `<pre>${JSON.stringify(value, null, 2)}</pre>` : `<pre>${value}</pre>`}
+          </div>`;
+      }
+
+      tabsHTML += '</div>';
+      output.innerHTML = tabsHTML + panelsHTML;
+    }
+
+    function showPanel(key) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.result-panel').forEach(panel => panel.classList.remove('active'));
+      document.querySelector(`.tab-btn[onclick="showPanel('${key}')"]`).classList.add('active');
+      document.getElementById(`panel-${key}`).classList.add('active');
+    }
+
+    function exportData(type) {
+      const endpoint = type === 'txt' ? '/api/export/txt' : '/api/export/json';
+      fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: reconData })
+      })
+      .then(response => response.blob())
+      .then(blob => {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `recon_results.${type}`;
+        link.click();
+      })
+      .catch(error => alert('Error exporting data: ' + error));
+    }
+  </script>
+</body>
+</html>

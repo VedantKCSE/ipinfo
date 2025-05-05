@@ -1,48 +1,62 @@
-from flask import Flask, render_template, request, send_file
-import os
-import socket
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Union
 from urllib.parse import urlparse
+import socket
+import os
 import requests
 import ssl
-import shodan
 import dns.resolver
-import json
 import io
+import json
+import pathlib
 
-app = Flask(__name__)
+app = FastAPI(title="Recon Tool API")
 
-SHODAN_API_KEY = ""  # Replace with your actual Shodan API key
-shodan_api = shodan.Shodan(SHODAN_API_KEY)
+# Mount static folder to serve HTML, CSS, JS
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-def run_command(command):
+# Serve index.html from /static on root path
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui():
+    index_file = pathlib.Path("static/index.html")
+    if index_file.exists():
+        return index_file.read_text()
+    return HTMLResponse(content="Index file not found", status_code=404)
+
+# ---------- Utility Functions ----------
+
+def run_command(command: str) -> str:
     return os.popen(command).read()
 
-def extract_hostname(input_value):
+def extract_hostname(input_value: str) -> str:
     input_value = input_value.strip()
     if not input_value.startswith(('http://', 'https://')):
         input_value = 'http://' + input_value
     return urlparse(input_value).hostname
 
-def resolve_to_ip(hostname):
+def resolve_to_ip(hostname: str) -> Optional[str]:
     try:
         return socket.gethostbyname(hostname)
     except socket.gaierror:
         return None
 
-def reverse_dns(ip):
+def reverse_dns(ip: str) -> str:
     try:
         return socket.gethostbyaddr(ip)[0]
     except Exception:
         return "Not available"
 
-def geoip_lookup(ip):
+def geoip_lookup(ip: str) -> dict:
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}")
         return r.json()
     except:
         return {}
 
-def get_ssl_info(hostname):
+def get_ssl_info(hostname: str) -> dict:
     try:
         ctx = ssl.create_default_context()
         with ctx.wrap_socket(socket.socket(), server_hostname=hostname) as s:
@@ -53,25 +67,23 @@ def get_ssl_info(hostname):
     except:
         return {}
 
-def get_http_headers(hostname):
+def get_http_headers(hostname: str) -> dict:
     try:
         response = requests.get(f"http://{hostname}", timeout=5)
         return dict(response.headers)
     except:
         return {}
 
-def get_subdomains_crtsh(domain):
+# Use subfinder to get subdomains
+def get_subdomains_subfinder(domain: str) -> List[str]:
     try:
-        r = requests.get(f"https://crt.sh/?q=%25.{domain}&output=json")
-        data = r.json()
-        subdomains = set()
-        for entry in data:
-            subdomains.update(entry['name_value'].split("\n"))
-        return sorted(subdomains)
-    except:
-        return []
+        subfinder_output = run_command(f"subfinder -d {domain} -o -")
+        subdomains = subfinder_output.splitlines()
+        return subdomains
+    except Exception as e:
+        return {"error": str(e)}
 
-def get_dns_records(domain):
+def get_dns_records(domain: str) -> Dict[str, List[str]]:
     records = {}
     try:
         for rtype in ['A', 'MX', 'NS', 'TXT', 'CNAME']:
@@ -81,56 +93,55 @@ def get_dns_records(domain):
         pass
     return records
 
-def shodan_lookup(ip):
-    try:
-        return shodan_api.host(ip)
-    except shodan.APIError as e:
-        return {"error": str(e)}
+# ---------- Pydantic Models ----------
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    data = None
-    error = None
-    if request.method == 'POST':
-        user_input = request.form['ip']
-        hostname = extract_hostname(user_input)
-        ip = resolve_to_ip(hostname)
+class ReconRequest(BaseModel):
+    target: str
 
-        if ip:
-            data = {
-                "resolved_ip": ip,
-                "reverse_dns": reverse_dns(ip),
-                "geo": geoip_lookup(ip),
-                "whois": run_command(f"whois {ip}"),
-                "dig": run_command(f"dig {ip}"),
-                "traceroute": run_command(f"traceroute {ip}"),
-                "nmap": run_command(f"nmap -Pn {ip}"),
-                "ssl_info": get_ssl_info(hostname),
-                "headers": get_http_headers(hostname),
-                "subdomains": get_subdomains_crtsh(hostname),
-                "dns_records": get_dns_records(hostname),
-                "shodan": shodan_lookup(ip)
-            }
-        else:
-            error = "❌ Could not resolve domain to IP. Please enter a valid IP or domain."
+class ExportRequest(BaseModel):
+    data: dict
 
-    return render_template('index.html', data=data, error=error)
+# ---------- API Endpoints ----------
 
-@app.route('/export/txt', methods=['POST'])
-def export_txt():
-    data = json.loads(request.form['data'])
+@app.post("/api/recon")
+async def run_recon(req: ReconRequest):
+    hostname = extract_hostname(req.target)
+    ip = resolve_to_ip(hostname)
+
+    if not ip:
+        raise HTTPException(status_code=400, detail="❌ Could not resolve domain to IP.")
+
+    # Run nmap with SSL and DNS scripts
+    nmap_output = run_command(f"nmap -Pn -p 443 --script ssl-cert,dns-brute,dns-zone-transfer,dns-service-discovery {ip}")
+
+    # Get subdomains using subfinder
+    subdomains = get_subdomains_subfinder(hostname)
+
+    result = {
+        "resolved_ip": ip,
+        "reverse_dns": reverse_dns(ip),
+        "geo": geoip_lookup(ip),
+        "whois": run_command(f"whois {ip}"),
+        "dig": run_command(f"dig {ip}"),
+        "traceroute": run_command(f"traceroute {ip}"),
+        "nmap_scripts": nmap_output,
+        "http_headers": get_http_headers(hostname),
+        "subdomains": subdomains,
+    }
+
+    return result
+
+@app.post("/api/export/txt")
+async def export_txt(req: ExportRequest):
     output = io.StringIO()
-    for key, value in data.items():
+    for key, value in req.data.items():
         output.write(f"{key.upper()}\n{'='*40}\n")
         output.write(json.dumps(value, indent=2) if not isinstance(value, str) else value)
         output.write("\n\n")
     output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/plain', as_attachment=True, download_name='recon_results.txt')
+    return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/plain", headers={"Content-Disposition": "attachment; filename=recon_results.txt"})
 
-@app.route('/export/json', methods=['POST'])
-def export_json():
-    data = json.loads(request.form['data'])
-    return send_file(io.BytesIO(json.dumps(data, indent=2).encode()), mimetype='application/json', as_attachment=True, download_name='recon_results.json')
-
-if __name__ == '__main__':
-    app.run(debug=True)
+@app.post("/api/export/json")
+async def export_json(req: ExportRequest):
+    content = json.dumps(req.data, indent=2).encode()
+    return StreamingResponse(io.BytesIO(content), media_type="application/json", headers={"Content-Disposition": "attachment; filename=recon_results.json"})
