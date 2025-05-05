@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, send_file
 import os
 import socket
 from urllib.parse import urlparse
@@ -6,6 +6,8 @@ import requests
 import ssl
 import shodan
 import dns.resolver
+import json
+import io
 
 app = Flask(__name__)
 
@@ -113,6 +115,22 @@ def index():
             error = "❌ Could not resolve domain to IP. Please enter a valid IP or domain."
 
     return render_template('index.html', data=data, error=error)
+
+@app.route('/export/txt', methods=['POST'])
+def export_txt():
+    data = json.loads(request.form['data'])
+    output = io.StringIO()
+    for key, value in data.items():
+        output.write(f"{key.upper()}\n{'='*40}\n")
+        output.write(json.dumps(value, indent=2) if not isinstance(value, str) else value)
+        output.write("\n\n")
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/plain', as_attachment=True, download_name='recon_results.txt')
+
+@app.route('/export/json', methods=['POST'])
+def export_json():
+    data = json.loads(request.form['data'])
+    return send_file(io.BytesIO(json.dumps(data, indent=2).encode()), mimetype='application/json', as_attachment=True, download_name='recon_results.json')
 
 if __name__ == '__main__':
     app.run(debug=True)
