@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, validator
 from typing import Optional, List, Dict, Union
 from urllib.parse import urlparse
 import socket
@@ -12,6 +12,7 @@ import dns.resolver
 import io
 import json
 import pathlib
+import re
 
 app = FastAPI(title="Recon Tool API")
 
@@ -53,7 +54,7 @@ def geoip_lookup(ip: str) -> dict:
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}")
         return r.json()
-    except:
+    except requests.RequestException:
         return {}
 
 def get_ssl_info(hostname: str) -> dict:
@@ -71,7 +72,7 @@ def get_http_headers(hostname: str) -> dict:
     try:
         response = requests.get(f"http://{hostname}", timeout=5)
         return dict(response.headers)
-    except:
+    except requests.RequestException:
         return {}
 
 # Use subfinder to get subdomains
@@ -89,14 +90,26 @@ def get_dns_records(domain: str) -> Dict[str, List[str]]:
         for rtype in ['A', 'MX', 'NS', 'TXT', 'CNAME']:
             answers = dns.resolver.resolve(domain, rtype, raise_on_no_answer=False)
             records[rtype] = [r.to_text() for r in answers]
-    except:
+    except Exception:
         pass
     return records
 
-# ---------- Pydantic Models ----------
+# ---------- Input Validation and Pydantic Models ----------
 
 class ReconRequest(BaseModel):
     target: str
+
+    @validator('target')
+    def validate_target(cls, v):
+        # Check if input is IP or Domain/URL
+        if re.match(r"^(\d{1,3}\.){3}\d{1,3}$", v):  # Simple regex to check if it's an IP address
+            return v
+        elif re.match(r"^https?://", v):  # URL format check
+            return v
+        elif re.match(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", v):  # Domain format check
+            return 'http://' + v
+        else:
+            raise ValueError("Invalid target format, it should be a domain, URL, or IP.")
 
 class ExportRequest(BaseModel):
     data: dict
@@ -105,17 +118,21 @@ class ExportRequest(BaseModel):
 
 @app.post("/api/recon")
 async def run_recon(req: ReconRequest):
-    hostname = extract_hostname(req.target)
+    target = req.target
+    hostname = extract_hostname(target)
     ip = resolve_to_ip(hostname)
 
     if not ip:
         raise HTTPException(status_code=400, detail="❌ Could not resolve domain to IP.")
 
-    # Run nmap with SSL and DNS scripts
-    nmap_output = run_command(f"nmap -Pn -p 443 --script ssl-cert,dns-brute,dns-zone-transfer,dns-service-discovery {ip}")
+    # Run nmap to scan all ports and include common scripts for services
+    nmap_output = run_command(f"nmap -Pn {ip}")
 
     # Get subdomains using subfinder
     subdomains = get_subdomains_subfinder(hostname)
+
+    # Add DNS records
+    dns_records = get_dns_records(hostname)
 
     result = {
         "resolved_ip": ip,
@@ -127,6 +144,7 @@ async def run_recon(req: ReconRequest):
         "nmap_scripts": nmap_output,
         "http_headers": get_http_headers(hostname),
         "subdomains": subdomains,
+        "dns_records": dns_records
     }
 
     return result
